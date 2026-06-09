@@ -12,6 +12,7 @@
 
   const storageKey = "custom-swagger-theme";
   let appConfig = { ...defaultConfig };
+  let customSwaggerSchemas = {};
 
   const createElement = (tag, className, text) => {
     const element = document.createElement(tag);
@@ -29,7 +30,7 @@
 
   const toAbsoluteUrl = (url) => {
     try {
-      return new URL(url, window.location.origin).href;
+      return new URL(url, globalThis.location.origin).href;
     } catch {
       return url;
     }
@@ -73,19 +74,27 @@
       const swaggerJson = await response.json();
       const info = swaggerJson.info || {};
 
+      customSwaggerSchemas = swaggerJson.components?.schemas || {};
+
       appConfig = {
         title: info.title || defaultConfig.title,
         version: info.version || defaultConfig.version,
         oas: normalizeOasVersion(swaggerJson),
         jsonUrl: absoluteJsonUrl,
         description: info.description || defaultConfig.description,
-        footer: `© ${new Date().getFullYear()} ${info.title || defaultConfig.title}. All rights reserved.`,
+        footer: `© ${new Date().getFullYear()} ${
+          info.title || defaultConfig.title
+        }. All rights reserved.`,
       };
     } catch {
+      customSwaggerSchemas = {};
+
       appConfig = {
         ...defaultConfig,
         jsonUrl: absoluteJsonUrl,
-        footer: `© ${new Date().getFullYear()} ${defaultConfig.title}. All rights reserved.`,
+        footer: `© ${new Date().getFullYear()} ${
+          defaultConfig.title
+        }. All rights reserved.`,
       };
     }
   };
@@ -114,7 +123,7 @@
     }
 
     if (section === "schemas") {
-      return document.querySelector(".swagger-ui .models");
+      return document.querySelector(".custom-swagger-schemas");
     }
 
     if (section === "about") {
@@ -133,10 +142,14 @@
 
     const headerHeight =
       document.querySelector(".custom-swagger-header")?.offsetHeight || 0;
-    const targetTop =
-      target.getBoundingClientRect().top + window.scrollY - headerHeight - 18;
 
-    window.scrollTo({
+    const targetTop =
+      target.getBoundingClientRect().top +
+      globalThis.scrollY -
+      headerHeight -
+      18;
+
+    globalThis.scrollTo({
       top: Math.max(targetTop, 0),
       behavior: "smooth",
     });
@@ -158,6 +171,7 @@
 
     const brand = createElement("div", "custom-swagger-brand");
     const logo = createElement("div", "custom-swagger-logo", "API");
+
     const title = createElement(
       "div",
       "custom-swagger-brand-title",
@@ -165,6 +179,7 @@
     );
 
     const badges = createElement("div", "custom-swagger-badges");
+
     badges.append(
       createElement("span", "custom-swagger-badge", appConfig.version),
       createElement("span", "custom-swagger-badge oas", appConfig.oas),
@@ -251,7 +266,7 @@
         await navigator.clipboard.writeText(appConfig.jsonUrl);
         copy.textContent = "✓";
 
-        window.setTimeout(() => {
+        globalThis.setTimeout(() => {
           copy.textContent = "⧉";
         }, 900);
       } catch {
@@ -264,7 +279,7 @@
 
         copy.textContent = "✓";
 
-        window.setTimeout(() => {
+        globalThis.setTimeout(() => {
           copy.textContent = "⧉";
         }, 900);
       }
@@ -302,7 +317,6 @@
     card.id = "endpoints";
 
     const inner = createElement("div", "custom-swagger-search-inner");
-    const icon = createElement("div", "custom-swagger-search-icon", "⌕");
 
     const input = createElement("input", "custom-swagger-search-input");
     input.type = "search";
@@ -317,18 +331,21 @@
     input.addEventListener("input", () => {
       clearTimeout(searchTimer);
 
-      searchTimer = window.setTimeout(() => {
+      searchTimer = globalThis.setTimeout(() => {
         const keyword = input.value.trim().toLowerCase();
         const hasKeyword = keyword.length > 0;
 
         document.querySelectorAll(".opblock").forEach((opblock) => {
           const method =
             opblock.querySelector(".opblock-summary-method")?.textContent || "";
+
           const path =
             opblock.querySelector(".opblock-summary-path")?.textContent || "";
+
           const desc =
             opblock.querySelector(".opblock-summary-description")
               ?.textContent || "";
+
           const text = `${method} ${path} ${desc}`.toLowerCase();
 
           opblock.hidden = hasKeyword && !text.includes(keyword);
@@ -355,9 +372,268 @@
       }
     });
 
-    inner.append(icon, input, key);
+    inner.append(input, key);
     card.append(inner);
     firstSection.before(card);
+  };
+
+  const getRefName = (ref) => {
+    if (!ref) {
+      return "";
+    }
+
+    return ref.split("/").pop() || ref;
+  };
+
+  const getSchemaDisplayType = (schema) => {
+    if (!schema) {
+      return "unknown";
+    }
+
+    if (schema.$ref) {
+      return getRefName(schema.$ref);
+    }
+
+    if (schema.type === "array") {
+      return `array<${getSchemaDisplayType(schema.items)}>`;
+    }
+
+    if (schema.type) {
+      return schema.nullable ? `${schema.type} nullable` : schema.type;
+    }
+
+    if (schema.oneOf?.length) {
+      return "oneOf";
+    }
+
+    if (schema.anyOf?.length) {
+      return "anyOf";
+    }
+
+    if (schema.allOf?.length) {
+      return "allOf";
+    }
+
+    return "object";
+  };
+
+  const getSchemaProperties = (schema) => {
+    if (!schema) {
+      return {};
+    }
+
+    if (schema.properties) {
+      return schema.properties;
+    }
+
+    if (schema.allOf?.length) {
+      return schema.allOf.reduce((result, item) => {
+        const nextSchema = item.$ref
+          ? customSwaggerSchemas[getRefName(item.$ref)]
+          : item;
+
+        return {
+          ...result,
+          ...getSchemaProperties(nextSchema),
+        };
+      }, {});
+    }
+
+    return {};
+  };
+
+  const getRequiredFields = (schema) => {
+    if (!schema) {
+      return [];
+    }
+
+    if (Array.isArray(schema.required)) {
+      return schema.required;
+    }
+
+    if (schema.allOf?.length) {
+      return schema.allOf.flatMap((item) => {
+        const nextSchema = item.$ref
+          ? customSwaggerSchemas[getRefName(item.$ref)]
+          : item;
+
+        return getRequiredFields(nextSchema);
+      });
+    }
+
+    return [];
+  };
+
+  const buildCustomSchemas = () => {
+    if (document.querySelector(".custom-swagger-schemas")) {
+      return;
+    }
+
+    const originalModels = document.querySelector(".swagger-ui .models");
+    const anchorElement =
+      originalModels || document.querySelector(".swagger-ui");
+
+    if (!anchorElement) {
+      return;
+    }
+
+    const schemaNames = Object.keys(customSwaggerSchemas);
+
+    if (!schemaNames.length) {
+      return;
+    }
+
+    const section = createElement("section", "custom-swagger-schemas");
+    section.id = "schemas";
+
+    const header = createElement("button", "custom-swagger-schemas-header");
+    header.type = "button";
+
+    const title = createElement(
+      "h2",
+      "custom-swagger-schemas-title",
+      "Schemas",
+    );
+
+    const arrow = createElement("span", "custom-swagger-schemas-arrow");
+    arrow.setAttribute("aria-hidden", "true");
+
+    header.append(title, arrow);
+
+    header.addEventListener("click", () => {
+      section.classList.toggle("is-collapsed");
+    });
+
+    const list = createElement("div", "custom-swagger-schema-list");
+
+    schemaNames.forEach((schemaName, index) => {
+      const schema = customSwaggerSchemas[schemaName];
+      const properties = getSchemaProperties(schema);
+      const propertyNames = Object.keys(properties);
+      const requiredFields = getRequiredFields(schema);
+
+      const card = createElement("article", "custom-swagger-schema-card");
+
+      if (index === 0) {
+        card.classList.add("is-open");
+      }
+
+      const button = createElement("button", "custom-swagger-schema-button");
+      button.type = "button";
+
+      const name = createElement(
+        "span",
+        "custom-swagger-schema-name",
+        schemaName,
+      );
+
+      const type = createElement(
+        "span",
+        "custom-swagger-schema-type",
+        getSchemaDisplayType(schema),
+      );
+
+      const toggle = createElement("span", "custom-swagger-schema-toggle");
+      toggle.setAttribute("aria-hidden", "true");
+
+      button.append(name, type, toggle);
+
+      const body = createElement("div", "custom-swagger-schema-body");
+      const panel = createElement("div", "custom-swagger-schema-panel");
+
+      if (!propertyNames.length) {
+        panel.append(
+          createElement(
+            "div",
+            "custom-swagger-schema-empty",
+            "No properties available.",
+          ),
+        );
+      } else {
+        propertyNames.forEach((propertyName) => {
+          const property = properties[propertyName];
+          const row = createElement("div", "custom-swagger-schema-row");
+
+          const propName = createElement("div", "custom-swagger-schema-prop");
+          propName.textContent = propertyName;
+
+          if (requiredFields.includes(propertyName)) {
+            propName.append(
+              createElement("span", "custom-swagger-schema-required", " *"),
+            );
+          }
+
+          const propType = createElement(
+            "div",
+            "custom-swagger-schema-prop-type",
+            getSchemaDisplayType(property),
+          );
+
+          const desc = createElement(
+            "div",
+            "custom-swagger-schema-desc",
+            property.description || "-",
+          );
+
+          row.append(propName, propType, desc);
+          panel.append(row);
+        });
+      }
+
+      body.append(panel);
+
+      button.addEventListener("click", () => {
+        card.classList.toggle("is-open");
+      });
+
+      card.append(button, body);
+      list.append(card);
+    });
+
+    section.append(header, list);
+
+    if (originalModels) {
+      originalModels.before(section);
+    } else {
+      anchorElement.append(section);
+    }
+  };
+
+  const markOpenedOperations = () => {
+    document.querySelectorAll(".swagger-ui .opblock").forEach((opblock) => {
+      const body = opblock.querySelector(".opblock-body");
+      const isOpen =
+        Boolean(body) &&
+        globalThis.getComputedStyle(body).display !== "none" &&
+        body.offsetParent !== null;
+
+      opblock.classList.toggle("is-open", isOpen);
+    });
+  };
+
+  const observeOperationState = () => {
+    const swaggerUi = document.querySelector(".swagger-ui");
+
+    if (!swaggerUi) {
+      return;
+    }
+
+    const observer = new MutationObserver(() => {
+      globalThis.requestAnimationFrame(markOpenedOperations);
+    });
+
+    observer.observe(swaggerUi, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "style", "aria-expanded"],
+    });
+
+    document.addEventListener("click", () => {
+      globalThis.setTimeout(markOpenedOperations, 50);
+    });
+
+    markOpenedOperations();
   };
 
   const buildFooter = () => {
@@ -370,38 +646,31 @@
       "custom-swagger-footer",
       appConfig.footer,
     );
+
     footer.id = "about";
-
     document.body.append(footer);
-  };
-
-  const markSchemasId = () => {
-    const models = document.querySelector(".swagger-ui .models");
-
-    if (models) {
-      models.id = "schemas";
-    }
   };
 
   const updateActiveNavOnScroll = () => {
     const sections = ["home", "endpoints", "schemas", "about"];
+
     const headerHeight =
       document.querySelector(".custom-swagger-header")?.offsetHeight || 0;
-    const currentPosition = window.scrollY + headerHeight + 80;
 
+    const currentPosition = globalThis.scrollY + headerHeight + 80;
     let activeSection = "home";
 
-    sections.forEach((section) => {
-      const target = getScrollTarget(section);
+    sections.forEach((sectionName) => {
+      const target = getScrollTarget(sectionName);
 
       if (!target) {
         return;
       }
 
-      const top = target.getBoundingClientRect().top + window.scrollY;
+      const top = target.getBoundingClientRect().top + globalThis.scrollY;
 
       if (currentPosition >= top) {
-        activeSection = section;
+        activeSection = sectionName;
       }
     });
 
@@ -418,13 +687,14 @@
     buildHeader();
     buildHero();
     buildSearch();
+    buildCustomSchemas();
+    observeOperationState();
     buildFooter();
-    markSchemasId();
 
-    window.addEventListener(
+    globalThis.addEventListener(
       "scroll",
       () => {
-        window.requestAnimationFrame(updateActiveNavOnScroll);
+        globalThis.requestAnimationFrame(updateActiveNavOnScroll);
       },
       { passive: true },
     );
@@ -434,20 +704,20 @@
     let attempt = 0;
     const maxAttempt = 80;
 
-    const timer = window.setInterval(() => {
+    const timer = globalThis.setInterval(() => {
       attempt += 1;
 
       const swaggerUi = document.querySelector(".swagger-ui");
       const firstOperation = document.querySelector(".opblock");
 
       if (swaggerUi && firstOperation) {
-        window.clearInterval(timer);
+        globalThis.clearInterval(timer);
         initialize();
         return;
       }
 
       if (attempt >= maxAttempt) {
-        window.clearInterval(timer);
+        globalThis.clearInterval(timer);
       }
     }, 100);
   };
